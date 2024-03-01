@@ -74,3 +74,9 @@ renren:
     # token有效时长，7天，单位秒
     expire: 604800
     header: token
+
+
+# 微信
+application:
+  app-id: wx4cb8e9621950da45
+  app-secret: 098e8a39cb7a2abff01760d030a0a3c4
