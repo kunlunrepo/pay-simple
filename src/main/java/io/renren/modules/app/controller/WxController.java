@@ -1,6 +1,8 @@
 package io.renren.modules.app.controller;
 
 
+import cn.hutool.extra.qrcode.QrCodeUtil;
+import cn.hutool.extra.qrcode.QrConfig;
 import cn.hutool.http.HttpUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
@@ -325,4 +327,113 @@ public class WxController {
     }
 
 
+    /**
+     * Native支付订单
+     */
+    @PostMapping("/nativePayOrder")
+    @ApiOperation("native支付订单")
+    @Login
+    public R nativePayOrder(@RequestBody PayOrderForm form,
+                              @RequestHeader HashMap header){
+        log.info("******************【native支付订单-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        Long userId = Long.parseLong(jwtUtils.getClaimByToken(token).getSubject());
+        int orderId = form.getOrderId();
+
+        // 判断用户
+        UserEntity user = new UserEntity();
+        user.setUserId(userId);
+        QueryWrapper wrapper = new QueryWrapper(user);
+        int count = userService.count(wrapper);
+        if (count == 0) {
+            return R.error("用户不存在");
+        }
+//        String openId = userService.getOne(wrapper).getOpenId();
+
+        // 查询订单
+        OrderEntity order = new OrderEntity();
+        order.setUserId(userId.intValue());
+        order.setId(orderId);
+        order.setStatus(1);
+        wrapper = new QueryWrapper(order);
+        int count1 = orderService.count(wrapper);
+        if (count1 == 0) {
+            return R.error("订单不存在");
+        }
+
+        // 查询订单内容
+        order = new OrderEntity();
+        order.setId(orderId);
+        wrapper = new QueryWrapper(order);
+        OrderEntity queryOrder = orderService.getOne(wrapper);
+
+        // 向微信平台发出请求，创建支付订单
+        String amount = queryOrder.getAmount().multiply(new BigDecimal("100")).intValue()+"";
+        log.info("支付金额:{}", amount);
+//        String amount = "30";
+        // 创建WXpay
+        try {
+            WXPay wxPay = new WXPay(myWXPayConfig); // 会帮助我们生成签名
+            HashMap map = new HashMap();
+            map.put("nonce_str", WXPayUtil.generateNonceStr()); // 随机字符串
+            map.put("body", "订单备注");
+            map.put("out_trade_no", queryOrder.getCode()); // 微信要求唯一
+            map.put("total_fee", amount);
+            map.put("spbill_create_ip", "127.0.0.1");
+            map.put("notify_url", "http://localhost:8080/app/wx/recieveMessage");
+            map.put("trade_type", "NATIVE");
+            String sign = WXPayUtil.generateSignature(map, key);
+            map.put("sign", sign);
+            // 调用微信支付
+            Map<String, String> result = wxPay.unifiedOrder(map);
+            /**
+             * return_code 状态码,  app_id 小程序ID,  mch_id 商品ID, nonce_str: 随机字符串
+             * sign 数字签名, result_code 业务结果, trade_type 交易类型, prepay_id支付订单号
+             */
+            String prepayId = result.get("prepay_id");
+            log.info("微信返回的prepayId: {}", prepayId);
+            // 付款地址
+            String codeUrl = result.get("code_url");
+            if (prepayId != null) {
+                // 保存支付订单ID
+                queryOrder.setPrepayId(prepayId);
+                UpdateWrapper updateWrapper = new UpdateWrapper();
+                updateWrapper.eq("id", queryOrder.getId());
+                orderService.update(queryOrder, updateWrapper);
+
+                log.info("******************【native支付订单-结束】******************");
+                return R.ok()
+                        .put("codeUrl", codeUrl);
+            } else {
+                return R.error("微信支付单生成失败");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.error("native付款-异常", e);
+            return R.error("微信支付模块故障");
+        }
+    }
+
+    /**
+     * Native支付二维码
+     */
+    @GetMapping("/qrcode")
+    public void  qrcode(HttpServletRequest request, HttpServletResponse response) throws IOException {
+        log.info("******************【native支付二维码-开始】******************");
+        String codeUrl = request.getParameter("codeUrl");
+        if (codeUrl != null && codeUrl.length() > 0) {
+            //二维码
+            QrConfig qrConfig = new QrConfig();
+            qrConfig.setWidth(250);
+            qrConfig.setHeight(250);
+            qrConfig.setMargin(2);
+            // 二维码要写入的流
+            OutputStream out = response.getOutputStream();
+            QrCodeUtil.generate(codeUrl, qrConfig, "jpg", out);
+            out.close();
+        }
+
+    }
 }

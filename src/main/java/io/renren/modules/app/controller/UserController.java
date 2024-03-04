@@ -25,11 +25,13 @@ import java.util.Map;
  * 
  */
 @RestController
-@RequestMapping("/app")
+@RequestMapping("/app/user")
 @Api("APP登录接口")
-public class AppLoginController {
+public class UserController {
+
     @Autowired
     private UserService userService;
+
     @Autowired
     private JwtUtils jwtUtils;
 

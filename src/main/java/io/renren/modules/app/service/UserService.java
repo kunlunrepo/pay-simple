@@ -14,7 +14,7 @@ import io.renren.modules.app.form.LoginForm;
  */
 public interface UserService extends IService<UserEntity> {
 
-	UserEntity queryByMobile(String mobile);
+//	UserEntity queryByMobile(String mobile);
 
 	/**
 	 * 用户登录
