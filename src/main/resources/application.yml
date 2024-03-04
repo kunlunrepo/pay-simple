@@ -80,3 +80,6 @@ renren:
 application:
   app-id: wx4cb8e9621950da45
   app-secret: 098e8a39cb7a2abff01760d030a0a3c4
+  mch-id: 1526972031
+  key: 1ef03c4d180d4b058992d73f31755a10
+  cert-path: K:\apiclient_cert.p12

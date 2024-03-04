@@ -5,10 +5,19 @@ import cn.hutool.http.HttpUtil;
 import cn.hutool.json.JSONObject;
 import cn.hutool.json.JSONUtil;
 import com.baomidou.mybatisplus.core.conditions.query.QueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.UpdateWrapper;
+import com.github.wxpay.sdk.MyWXPayConfig;
+import com.github.wxpay.sdk.WXPay;
+import com.github.wxpay.sdk.WXPayConfig;
+import com.github.wxpay.sdk.WXPayUtil;
 import io.renren.common.utils.R;
 import io.renren.common.validator.ValidatorUtils;
+import io.renren.modules.app.annotation.Login;
+import io.renren.modules.app.entity.OrderEntity;
 import io.renren.modules.app.entity.UserEntity;
+import io.renren.modules.app.form.PayOrderForm;
 import io.renren.modules.app.form.WxLoginForm;
+import io.renren.modules.app.service.OrderService;
 import io.renren.modules.app.service.UserService;
 import io.renren.modules.app.utils.JwtUtils;
 import io.swagger.annotations.Api;
@@ -16,11 +25,9 @@ import io.swagger.annotations.ApiOperation;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.web.bind.annotation.PostMapping;
-import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestMapping;
-import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.bind.annotation.*;
 
+import java.math.BigDecimal;
 import java.util.Date;
 import java.util.HashMap;
 import java.util.Map;
@@ -46,11 +53,20 @@ public class WxController {
     @Autowired
     private JwtUtils jwtUtils;
 
+    @Autowired
+    private OrderService orderService;
+
+    @Autowired
+    private MyWXPayConfig myWXPayConfig;
+
+    @Value("${application.key}")
+    private String key;
+
     /**
-     * 登录
+     * 微信登录
      */
     @PostMapping("login")
-    @ApiOperation("登录")
+    @ApiOperation("微信登录")
     public R login(@RequestBody WxLoginForm form){
         log.info("******************【微信登录-开始】******************");
         // 校验
@@ -100,7 +116,105 @@ public class WxController {
         result.put("token", token);
         result.put("expire", jwtUtils.getExpire());
         log.info("******************【微信登录-结束】******************");
-        return R.ok(openid);
+        return R.ok(result);
+    }
+
+    /**
+     * 小程序支付订单
+     */
+    @PostMapping("microAppPayOrder")
+    @ApiOperation("小程序支付订单")
+    @Login
+    public R microAppPayOrder(@RequestBody PayOrderForm form,
+                 @RequestHeader HashMap header){
+        log.info("******************【小程序支付订单-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        Long userId = Long.parseLong(jwtUtils.getClaimByToken(token).getSubject());
+        int orderId = form.getOrderId();
+
+        // 判断用户
+        UserEntity user = new UserEntity();
+        user.setUserId(userId);
+        QueryWrapper wrapper = new QueryWrapper(user);
+        int count = userService.count(wrapper);
+        if (count == 0) {
+            return R.error("用户不存在");
+        }
+        String openId = userService.getOne(wrapper).getOpenId();
+
+        // 查询订单
+        OrderEntity order = new OrderEntity();
+        order.setUserId(userId.intValue());
+        order.setId(orderId);
+        order.setStatus(1);
+        wrapper = new QueryWrapper(order);
+        int count1 = orderService.count(wrapper);
+        if (count1 == 0) {
+            return R.error("订单不存在");
+        }
+
+        // 查询订单内容
+        order = new OrderEntity();
+        order.setId(orderId);
+        wrapper = new QueryWrapper(order);
+        OrderEntity queryOrder = orderService.getOne(wrapper);
+
+        // 向微信平台发出请求，创建支付订单
+//        String amount = queryOrder.getAmount().multiply(new BigDecimal("100")).intValue()+"";
+//        log.info("支付金额:{}", amount);
+        String amount = "30";
+        // 创建WXpay
+        try {
+            WXPay wxPay = new WXPay(myWXPayConfig);
+            HashMap map = new HashMap();
+            map.put("nonce_str", WXPayUtil.generateNonceStr()); // 随机字符串
+            map.put("body", "订单备注");
+            map.put("out_trade_no", queryOrder.getCode()); // 微信要求唯一
+            map.put("total_fee", amount);
+            map.put("spbill_create_ip", "127.0.0.1");
+            map.put("notify_url", "http://localhost:8080/app/wx/notify");
+            map.put("trade_type", "JSAPI");
+            map.put("openid", openId);
+            // 调用微信支付
+            Map<String, String> result = wxPay.unifiedOrder(map);
+            /**
+             * return_code 状态码,  app_id 小程序ID,  mch_id 商品ID, nonce_str: 随机字符串
+             * sign 数字签名, result_code 业务结果, trade_type 交易类型, prepay_id支付订单号
+             */
+            String prepayId = result.get("prepay_id");
+            log.info("微信返回的prepayId: {}", prepayId);
+            if (prepayId != null) {
+                // 保存支付订单ID
+                queryOrder.setPrepayId(prepayId);
+                UpdateWrapper updateWrapper = new UpdateWrapper();
+                updateWrapper.eq("id", queryOrder.getId());
+                orderService.update(queryOrder, updateWrapper);
+                // 生成数字签名
+                Map signMap = new HashMap();
+                signMap.put("appId", appId);
+                String timeStamp = new Date().getTime()+"";
+                signMap.put("timeStamp", timeStamp);
+                String nonStr = WXPayUtil.generateNonceStr();
+                signMap.put("nonceStr", nonStr);
+                signMap.put("package", "prepay_id=" + prepayId);
+                signMap.put("signType", "MD5");
+                String paySign = WXPayUtil.generateSignature(signMap, key);
+                log.info("******************【小程序支付订单-结束】******************");
+                return R.ok()
+                        .put("package", "prepay_id=" + prepayId)
+                        .put("timeStamp", timeStamp)
+                        .put("nonceStr", nonStr)
+                        .put("paySign", paySign);
+            } else {
+                return R.error("微信支付单生成失败");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.error("小程序付款-异常", e);
+            return R.error("微信支付模块故障");
+        }
     }
 
 }

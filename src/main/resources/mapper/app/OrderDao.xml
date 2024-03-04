@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN" "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="io.renren.modules.app.dao.OrderDao">
+
+    <!--查询订单列表-->
+    <select id="searchUserOrderList"
+            parameterType="HashMap"
+            resultType="io.renren.modules.app.entity.OrderEntity">
+        select
+            id,code,user_id,amount,payment_type,status,create_time, prepay_id
+        from tb_order
+        where user_id = #{userId}
+        limit #{start}, #{length}
+    </select>
+
+</mapper>
