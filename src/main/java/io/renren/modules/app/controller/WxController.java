@@ -16,6 +16,7 @@ import io.renren.modules.app.annotation.Login;
 import io.renren.modules.app.entity.OrderEntity;
 import io.renren.modules.app.entity.UserEntity;
 import io.renren.modules.app.form.PayOrderForm;
+import io.renren.modules.app.form.UpdateOrderStatusForm;
 import io.renren.modules.app.form.WxLoginForm;
 import io.renren.modules.app.service.OrderService;
 import io.renren.modules.app.service.UserService;
@@ -27,6 +28,9 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.web.bind.annotation.*;
 
+import javax.servlet.http.HttpServletRequest;
+import javax.servlet.http.HttpServletResponse;
+import java.io.*;
 import java.math.BigDecimal;
 import java.util.Date;
 import java.util.HashMap;
@@ -46,6 +50,9 @@ public class WxController {
 
     @Value("${application.app-secret}")
     private String appSecret;
+
+    @Value("${application.mch-id}")
+    private String mchId;
 
     @Autowired
     private UserService userService;
@@ -162,9 +169,9 @@ public class WxController {
         OrderEntity queryOrder = orderService.getOne(wrapper);
 
         // 向微信平台发出请求，创建支付订单
-//        String amount = queryOrder.getAmount().multiply(new BigDecimal("100")).intValue()+"";
-//        log.info("支付金额:{}", amount);
-        String amount = "30";
+        String amount = queryOrder.getAmount().multiply(new BigDecimal("100")).intValue()+"";
+        log.info("支付金额:{}", amount);
+//        String amount = "30";
         // 创建WXpay
         try {
             WXPay wxPay = new WXPay(myWXPayConfig);
@@ -216,5 +223,106 @@ public class WxController {
             return R.error("微信支付模块故障");
         }
     }
+
+    /**
+     * 支付回调接口
+     */
+    @RequestMapping("/recieveMessage")
+    @ApiOperation("支付回调接口")
+    public void recieveMessage(HttpServletRequest request, HttpServletResponse response) throws Exception {
+        log.info("******************【支付回调接口-开始】******************");
+        request.setCharacterEncoding("utf-8");
+
+        Reader reader = request.getReader();
+        BufferedReader buffer = new BufferedReader(reader);
+        String line = buffer.readLine();
+        StringBuffer temp = new StringBuffer();
+        while (line != null) {
+            temp.append(line);
+            line = buffer.readLine();
+        }
+        buffer.close();
+        reader.close();
+
+        Map<String, String> map = WXPayUtil.xmlToMap(temp.toString());
+        String resultCode = map.get("result_code");
+        String returnCode = map.get("return_code");
+        if (returnCode.equals("SUCCESS") && resultCode.equals("SUCCESS")) {
+            String outTradeNo = map.get("out_trade_no"); // 支付流水号
+            UpdateWrapper wrapper = new UpdateWrapper();
+            wrapper.eq("code", outTradeNo);
+            wrapper.set("status", 2);
+            orderService.update(wrapper);
+
+            // 向微信平台返回响应
+            response.setCharacterEncoding("utf-8");
+            response.setContentType("application/xml");
+            Writer writer = response.getWriter();
+            BufferedWriter bufferedWriter = new BufferedWriter(writer);
+            bufferedWriter.write("<xml><return_code><![CDATA[SUCCESS]]></return_code> <return_msg><![CDATA[OK]]></return_msg></xml>");
+
+            bufferedWriter.close();
+            writer.close();
+            log.info("******************【支付回调接口-结束】******************");
+        }
+    }
+
+    /**
+     * 更新商品订单状态 (主动查询支付结果)
+     */
+    @Login
+    @PostMapping("/updateOrderStatus")
+    @ApiOperation("更新商品订单状态")
+    public R updateOrderStatus(@RequestBody UpdateOrderStatusForm form, @RequestHeader HashMap header) throws Exception {
+        log.info("******************【更新商品订单状态-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        int userId = Integer.parseInt(jwtUtils.getClaimByToken(token).getSubject());
+        int orderId = form.getOrderId();
+
+        // 查询订单
+        OrderEntity orderEntity = new OrderEntity();
+        orderEntity.setUserId(userId);
+        orderEntity.setId(orderId);
+        QueryWrapper wrapper = new QueryWrapper(orderEntity);
+        int count = orderService.count(wrapper);
+        if (count == 0) {
+            return R.error("用户与订单不匹配");
+        }
+
+        orderEntity = orderService.getOne(wrapper);
+        String code = orderEntity.getCode();
+        HashMap map = new HashMap();
+        map.put("appid", appId);
+        map.put("mch_id", mchId);
+        map.put("out_trade_no", code);
+        map.put("nonce_str", WXPayUtil.generateNonceStr());
+        String sign = WXPayUtil.generateSignature(map, key);
+        map.put("sign", sign);
+
+        WXPay wxPay = new WXPay(myWXPayConfig);
+        Map<String, String> result = wxPay.orderQuery(map);
+        String resultCode = result.get("result_code");
+        String returnCode = result.get("return_code");
+        if (returnCode.equals("SUCCESS") && resultCode.equals("SUCCESS")) {
+            String tradeState = result.get("trade_state");
+            if (tradeState.equals("SUCCESS")) {
+                UpdateWrapper updateWrapper = new UpdateWrapper();
+                updateWrapper.eq("code", code);
+                updateWrapper.set("status", 2);
+                orderService.update(updateWrapper);
+                log.info("******************【更新商品订单状态-结束_订单状态已修改】******************");
+                return R.ok("订单状态已修改");
+            } else {
+                log.info("******************【更新商品订单状态-结束_订单状态未修改】******************");
+                return R.ok("订单状态未修改");
+            }
+        } else {
+            log.info("******************【更新商品订单状态-结束_微信支付单查询失败】******************");
+            return R.error("微信支付单查询失败");
+        }
+    }
+
 
 }
