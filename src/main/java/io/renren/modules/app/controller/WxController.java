@@ -18,6 +18,7 @@ import io.renren.modules.app.annotation.Login;
 import io.renren.modules.app.entity.OrderEntity;
 import io.renren.modules.app.entity.UserEntity;
 import io.renren.modules.app.form.PayOrderForm;
+import io.renren.modules.app.form.SearchOrderStatusForm;
 import io.renren.modules.app.form.UpdateOrderStatusForm;
 import io.renren.modules.app.form.WxLoginForm;
 import io.renren.modules.app.service.OrderService;
@@ -72,12 +73,12 @@ public class WxController {
     private String key;
 
     /**
-     * 微信登录
+     * 小程序登录
      */
     @PostMapping("login")
-    @ApiOperation("微信登录")
+    @ApiOperation("小程序登录")
     public R login(@RequestBody WxLoginForm form){
-        log.info("******************【微信登录-开始】******************");
+        log.info("******************【小程序登录-开始】******************");
         // 校验
         ValidatorUtils.validateEntity(form);
 
@@ -124,7 +125,7 @@ public class WxController {
         HashMap result = new HashMap();
         result.put("token", token);
         result.put("expire", jwtUtils.getExpire());
-        log.info("******************【微信登录-结束】******************");
+        log.info("******************【小程序登录-结束】******************");
         return R.ok(result);
     }
 
@@ -227,7 +228,7 @@ public class WxController {
     }
 
     /**
-     * 支付回调接口
+     * 支付回调接口(小程序和native都可以调用)
      */
     @RequestMapping("/recieveMessage")
     @ApiOperation("支付回调接口")
@@ -270,13 +271,13 @@ public class WxController {
     }
 
     /**
-     * 更新商品订单状态 (主动查询支付结果)
+     * 小程序更新商品订单状态 (主动查询支付结果)
      */
     @Login
     @PostMapping("/updateOrderStatus")
-    @ApiOperation("更新商品订单状态")
+    @ApiOperation("小程序更新商品订单状态")
     public R updateOrderStatus(@RequestBody UpdateOrderStatusForm form, @RequestHeader HashMap header) throws Exception {
-        log.info("******************【更新商品订单状态-开始】******************");
+        log.info("******************【小程序更新商品订单状态-开始】******************");
         // 校验
         ValidatorUtils.validateEntity(form);
         String token = header.get("token").toString();
@@ -313,15 +314,16 @@ public class WxController {
                 UpdateWrapper updateWrapper = new UpdateWrapper();
                 updateWrapper.eq("code", code);
                 updateWrapper.set("status", 2);
+                updateWrapper.set("payment_type", 1);
                 orderService.update(updateWrapper);
-                log.info("******************【更新商品订单状态-结束_订单状态已修改】******************");
+                log.info("******************【小程序更新商品订单状态-结束_订单状态已修改】******************");
                 return R.ok("订单状态已修改");
             } else {
-                log.info("******************【更新商品订单状态-结束_订单状态未修改】******************");
+                log.info("******************【小程序更新商品订单状态-结束_订单状态未修改】******************");
                 return R.ok("订单状态未修改");
             }
         } else {
-            log.info("******************【更新商品订单状态-结束_微信支付单查询失败】******************");
+            log.info("******************【小程序更新商品订单状态-结束_微信支付单查询失败】******************");
             return R.error("微信支付单查询失败");
         }
     }
@@ -434,6 +436,64 @@ public class WxController {
             QrCodeUtil.generate(codeUrl, qrConfig, "jpg", out);
             out.close();
         }
+        log.info("******************【native支付二维码-结束】******************");
+    }
 
+    /**
+     * Native查询支付订单状态
+     */
+    @Login
+    @PostMapping("/searchOrderStatus")
+    @ApiOperation("Native查询支付订单状态")
+    public R searchOrderStatus(@RequestBody SearchOrderStatusForm form, @RequestHeader HashMap header) throws Exception {
+        log.info("******************【Native查询支付订单状态-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        int userId = Integer.parseInt(jwtUtils.getClaimByToken(token).getSubject());
+        int orderId = form.getOrderId();
+
+        // 查询订单
+        OrderEntity orderEntity = new OrderEntity();
+        orderEntity.setUserId(userId);
+        orderEntity.setId(orderId);
+        QueryWrapper wrapper = new QueryWrapper(orderEntity);
+        int count = orderService.count(wrapper);
+        if (count == 0) {
+            return R.error("用户与订单不匹配");
+        }
+
+        orderEntity = orderService.getOne(wrapper);
+        String code = orderEntity.getCode();
+        HashMap map = new HashMap();
+        map.put("appid", appId);
+        map.put("mch_id", mchId);
+        map.put("out_trade_no", code);
+        map.put("nonce_str", WXPayUtil.generateNonceStr());
+        String sign = WXPayUtil.generateSignature(map, key);
+        map.put("sign", sign);
+
+        WXPay wxPay = new WXPay(myWXPayConfig);
+        Map<String, String> result = wxPay.orderQuery(map);
+        String resultCode = result.get("result_code");
+        String returnCode = result.get("return_code");
+        if (returnCode.equals("SUCCESS") && resultCode.equals("SUCCESS")) {
+            String tradeState = result.get("trade_state");
+            if (tradeState.equals("SUCCESS")) {
+                UpdateWrapper updateWrapper = new UpdateWrapper();
+                updateWrapper.eq("code", code);
+                updateWrapper.set("status", 2);
+                updateWrapper.set("payment_type", 1);
+                orderService.update(updateWrapper);
+                log.info("******************【Native查询支付订单状态-结束_订单状态已修改】******************");
+                return R.ok("订单状态已修改");
+            } else {
+                log.info("******************【Native查询支付订单状态-结束_订单状态未修改】******************");
+                return R.ok("订单状态未修改");
+            }
+        } else {
+            log.info("******************【Native查询支付订单状态-结束_微信支付单查询失败】******************");
+            return R.error("微信支付单查询失败");
+        }
     }
 }
