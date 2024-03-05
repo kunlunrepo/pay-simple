@@ -10,6 +10,7 @@ import io.renren.common.validator.ValidatorUtils;
 import io.renren.modules.app.annotation.Login;
 import io.renren.modules.app.entity.OrderEntity;
 import io.renren.modules.app.entity.UserEntity;
+import io.renren.modules.app.form.SearchOrderForm;
 import io.renren.modules.app.form.UserOrderForm;
 import io.renren.modules.app.form.WxLoginForm;
 import io.renren.modules.app.service.OrderService;
@@ -66,6 +67,26 @@ public class OrderController {
 
         log.info("******************【查询用户订单列表-结束】******************");
         return R.ok().put("list", list);
+    }
+
+    /**
+     * 根据订单编号查询订单详情
+     */
+    @PostMapping("searchOrderById")
+    @ApiOperation("根据订单编号查询订单详情")
+    @Login
+    public R searchOrderById(@RequestBody SearchOrderForm form,
+                                @RequestHeader HashMap header){
+        log.info("******************【根据订单编号查询订单详情-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        Integer userId = Integer.parseInt(jwtUtils.getClaimByToken(token).getSubject());
+
+        QueryWrapper<OrderEntity> wrapper = new QueryWrapper<OrderEntity>();
+        wrapper.eq("id", form.getOrderId());
+        OrderEntity order = orderService.getOne(wrapper);
+        return R.ok().put("order", order);
     }
 
 }
