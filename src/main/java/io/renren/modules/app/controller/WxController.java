@@ -17,10 +17,7 @@ import io.renren.common.validator.ValidatorUtils;
 import io.renren.modules.app.annotation.Login;
 import io.renren.modules.app.entity.OrderEntity;
 import io.renren.modules.app.entity.UserEntity;
-import io.renren.modules.app.form.PayOrderForm;
-import io.renren.modules.app.form.SearchOrderStatusForm;
-import io.renren.modules.app.form.UpdateOrderStatusForm;
-import io.renren.modules.app.form.WxLoginForm;
+import io.renren.modules.app.form.*;
 import io.renren.modules.app.service.OrderService;
 import io.renren.modules.app.service.UserService;
 import io.renren.modules.app.utils.JwtUtils;
@@ -496,4 +493,99 @@ public class WxController {
             return R.error("微信支付单查询失败");
         }
     }
+
+    /**
+     * 付款码付款
+     */
+    @PostMapping("/scanCodePayOrder")
+    @ApiOperation("付款码付款")
+    @Login
+    public R scanCodePayOrder(@RequestBody ScanCodePayOrderForm form,
+                            @RequestHeader HashMap header){
+        log.info("******************【付款码付款-开始】******************");
+        // 校验
+        ValidatorUtils.validateEntity(form);
+        String token = header.get("token").toString();
+        Long userId = Long.parseLong(jwtUtils.getClaimByToken(token).getSubject());
+        int orderId = form.getOrderId();
+
+        // 判断用户
+        UserEntity user = new UserEntity();
+        user.setUserId(userId);
+        QueryWrapper wrapper = new QueryWrapper(user);
+        int count = userService.count(wrapper);
+        if (count == 0) {
+            return R.error("用户不存在");
+        }
+
+        // 查询订单
+        OrderEntity order = new OrderEntity();
+        order.setUserId(userId.intValue());
+        order.setId(orderId);
+        order.setStatus(1);
+        wrapper = new QueryWrapper(order);
+        int count1 = orderService.count(wrapper);
+        if (count1 == 0) {
+            return R.error("订单不存在");
+        }
+
+        // 查询订单内容
+        order = new OrderEntity();
+        order.setId(orderId);
+        wrapper = new QueryWrapper(order);
+        OrderEntity queryOrder = orderService.getOne(wrapper);
+
+        // 向微信平台发出请求，创建支付订单
+        String amount = queryOrder.getAmount().multiply(new BigDecimal("100")).intValue()+"";
+        log.info("支付金额:{}", amount);
+//        String amount = "30";
+        // 创建WXpay
+        try {
+            WXPay wxPay = new WXPay(myWXPayConfig); // 会帮助我们生成签名
+            HashMap map = new HashMap();
+            map.put("appid", appId); // 可以不填
+            map.put("mch_id", mchId); // 可以不填
+            map.put("nonce_str", WXPayUtil.generateNonceStr()); // 随机字符串
+            map.put("body", "订单备注");
+            map.put("out_trade_no", queryOrder.getCode()); // 微信要求唯一
+            map.put("total_fee", amount);
+            map.put("spbill_create_ip", "127.0.0.1");
+            map.put("auth_code", form.getAuthCode()); // 付款码
+            String sign = WXPayUtil.generateSignature(map, key);
+            map.put("sign", sign);
+            // 调用微信扣款
+            Map<String, String> result = wxPay.microPay(map);
+            /**
+             * return_code 状态码,  app_id 小程序ID,  mch_id 商品ID, nonce_str: 随机字符串
+             * sign 数字签名, result_code 业务结果, trade_type 交易类型, prepay_id支付订单号
+             */
+            String returnCode = result.get("return_code");
+            String resultCode = result.get("result_code");
+            if (returnCode.equals("SUCCESS") && resultCode.equals("SUCCESS")) {
+                String prepayId = result.get("transaction_id");
+                log.info("微信返回的prepayId: {}", prepayId);
+                if (prepayId != null) {
+                    // 保存支付订单ID
+                    queryOrder.setPrepayId(prepayId);
+                    queryOrder.setStatus(2);
+                    queryOrder.setPaymentType(1); // 微信付款
+                    UpdateWrapper updateWrapper = new UpdateWrapper();
+                    updateWrapper.eq("id", queryOrder.getId());
+                    orderService.update(queryOrder, updateWrapper);
+
+                    log.info("******************【付款码付款-结束】******************");
+                    return R.ok("付款成功");
+                } else {
+                    return R.error("付款失败");
+                }
+            } else {
+                return R.error("付款失败");
+            }
+        } catch (Exception e) {
+            e.printStackTrace();
+            log.error("native付款-异常", e);
+            return R.error("微信支付模块故障");
+        }
+    }
+
 }
